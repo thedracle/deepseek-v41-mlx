@@ -236,3 +236,26 @@ optimal at that width (MLX 8-bit affine is *larger*); 4-bit halves 203 GB to
 for tolerance, but measure ppl at engram 4b vs 6b vs native before publishing.
 V4's warning stands: experts at 3-bit collapsed outright; assume the same
 cliff here.
+
+## Running at 512 GiB (measured, 2026-09-10)
+
+* **mixed-4_8-engram4 (427 GB decimal)** is the shippable build for 512 GiB
+  Macs: strict-loads, ppl 2.8963 [2.7103, 3.0933] over 286,580 tokens,
+  coherent greedy generation at ~5-10 tok/s, peak 427 GB.
+* **mixed-4_8-engram6 (477 GB) does NOT run on 512 GiB.** Materialized
+  loading enters compressor thrash ~380 GB in (macOS compresses MLX's dirty
+  buffers rather than evicting page cache fast enough; wired-limit 400-470
+  and cache prewarming don't change the outcome), and MLX has no true
+  streaming mode — a "lazy" load node materializes WHOLE on first eval, so a
+  lazy forward transiently needs build size twice over. It needs a 1 TB
+  machine. Its quality case rests on the ladder, where engram-6bit is
+  indistinguishable from the native fp8 tables.
+* Metal watchdog operations: one GPU timeout poisons the process
+  (`SubmissionsIgnored` on every later submit) — in-process retries must go
+  straight to the CPU stream or the work must be restructured so no command
+  buffer stalls: chunk big forwards (generate prefill and ppl windows run in
+  256-512-token chunks with an eval between), materialize big mmapped
+  tensors on the CPU stream before any GPU op touches them (the ladder does
+  this for the engram tables), and materialize whole builds at load when
+  they fit (`load()` auto-selects; env overrides `DSV41_LAZY`,
+  `DSV41_WIRED_GB`).

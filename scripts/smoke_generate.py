@@ -25,7 +25,7 @@ path = sys.argv[1]
 n = int(sys.argv[2]) if len(sys.argv) > 2 else 120
 
 t0 = time.time()
-model, args = load(path, lazy=True)
+model, args = load(path)   # auto lazy/materialize (see load.py)
 tok = load_tokenizer(path)
 tc_path = os.path.join(path, "tokenizer_config.json")
 template = None

@@ -40,17 +40,41 @@ def main():
     ids_all = np.load(CORPUS)
     n_win = len(ids_all) // SEQ
     print(f"[ppl] {name}: {n_win} windows x {SEQ} tokens = {n_win * SEQ:,}", flush=True)
-    model, _ = load(MODEL, lazy=True)
+    model, _ = load(MODEL)  # auto lazy/materialize (see load.py)
     win_nll, win_tok, t0 = [], [], time.time()
-    for w in range(n_win):
-        ids = ids_all[w * SEQ:(w + 1) * SEQ].tolist()
+    # The window forward runs in chunks (identical numerics — the parity suite
+    # proves chunked prefill == single forward): one 2048-token graph over a
+    # near-RAM-sized lazy build can stall a Metal command buffer past the GPU
+    # watchdog, and after ONE timeout the process's further GPU submissions are
+    # ignored (kIOGPUCommandBufferCallbackErrorSubmissionsIgnored) — so
+    # prevention is the only strategy that works in-process.
+    CHUNK = int(os.environ.get("DSV41_PPL_CHUNK", "256"))
+
+    def window_nll(ids):
         cache = model.make_cache(bsz=1, max_seq_len=SEQ + 8, dtype=mx.bfloat16)
-        lg = model(mx.array([ids]), cache)[0].astype(mx.float32)
+        ids_mx = mx.array([ids])
+        pieces = []
+        for a in range(0, len(ids), CHUNK):
+            lg = model(ids_mx[:, a:a + CHUNK], cache)[0].astype(mx.float32)
+            mx.eval(lg)
+            pieces.append(lg)
+        lg = mx.concatenate(pieces, axis=0)
         lg = lg - mx.logsumexp(lg, axis=-1, keepdims=True)
         nll = -lg[mx.arange(len(ids) - 1), mx.array(ids[1:])]
-        win_nll.append(float(nll.sum().item()))
+        return float(nll.sum().item())
+
+    for w in range(n_win):
+        ids = ids_all[w * SEQ:(w + 1) * SEQ].tolist()
+        try:
+            total = window_nll(ids)
+        except RuntimeError as err:
+            if "Timeout" in str(err) or "Ignored" in str(err):
+                print(f"[ppl] window {w}: GPU watchdog tripped and further "
+                      f"submissions are ignored — rerun (state is per-window); "
+                      f"consider a smaller DSV41_PPL_CHUNK", flush=True)
+            raise
+        win_nll.append(total)
         win_tok.append(len(ids) - 1)
-        del cache
         mx.clear_cache()
         if (w + 1) % 10 == 0 or w == n_win - 1:
             done = sum(win_tok)

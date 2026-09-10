@@ -27,7 +27,7 @@ path = sys.argv[1]
 n = int(sys.argv[2]) if len(sys.argv) > 2 else 100
 
 t0 = time.time()
-model, args = load(path, lazy=True, strict=True)
+model, args = load(path, strict=True)  # auto lazy/materialize (see load.py)
 print(f"[strict] loaded in {time.time() - t0:.0f}s: zero missing / zero "
       f"unexpected tensors; vision passthrough: {len(model._vision_passthrough)}",
       flush=True)

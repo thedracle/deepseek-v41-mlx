@@ -242,7 +242,7 @@ def self_check(margs, sane: dict, prefix: str, li: int, variants, group_size: in
                 want = qt[f"{base}.{suffix}"]
                 assert mx.array_equal(got, want).item(), f"{name}: {base}.{suffix} differs"
         if layer.engram is not None and engram != "native":
-            idx = mx.arange(min(256, layer.engram.embed.weight.shape[0]))
+            idx = mx.arange(min(4096, layer.engram.embed.weight.shape[0]))
             got = layer.engram.embed(idx)
             t = quantize_engram_table(layer.engram.embed.weight[idx],
                                       layer.engram.embed.scale[idx],
@@ -363,6 +363,17 @@ def main() -> int:
         t0 = time.time()
         prefix = f"layers.{li}."
         raw = load_subset(src, smap, prefix)
+        eng_raw = [v for k, v in raw.items() if ".engram.embed." in k]
+        if eng_raw:
+            # Materialize the ~101 GB table via the CPU stream BEFORE any GPU op
+            # touches it: a gather over the cold-mmapped load node would put
+            # ~40 s of disk page-in inside one Metal command buffer and trip
+            # the GPU watchdog (this killed the first full run at layer 14).
+            tw = time.time()
+            with mx.stream(mx.cpu):
+                mx.eval(*eng_raw)
+            print(f"  engram table materialized on the CPU stream "
+                  f"({time.time() - tw:.0f}s)", flush=True)
         sane = sanitize_group(sorted(raw), raw)
         for k, v in sane.items():
             if ".engram.embed." not in k:   # the tables stay mmapped, never whole

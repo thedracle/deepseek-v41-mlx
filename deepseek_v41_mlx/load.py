@@ -78,7 +78,44 @@ def load_token_map(path: str, args: ModelArgs, cache_dir: str | None = None):
     return token_map
 
 
-def load(path: str, lazy: bool = False, strict: bool = True):
+def load(path: str, lazy: bool | None = None, strict: bool = True):
+    """``lazy=None`` auto-selects: builds that fit comfortably in physical RAM
+    are materialized at load time (CPU-side, avoiding cold-mmap page-in inside
+    a GPU command buffer — that trips Metal's watchdog); builds larger than
+    ~80% of RAM stay mmap-lazy, because materialized buffers are unevictable
+    and drive the machine into compressor thrash, while clean file-backed
+    pages stream from disk per forward (measured: a 476 GB build on 512 GiB
+    stalled the box when materialized, runs lazily)."""
+    try:
+        mx.set_wired_limit(int(float(os.environ.get("DSV41_WIRED_GB", "470")) * 1e9))
+    except Exception:  # noqa: BLE001
+        pass
+    if os.environ.get("DSV41_LAZY") in ("0", "1"):
+        lazy = os.environ["DSV41_LAZY"] == "1"
+        print(f"[load] lazy={lazy} forced via DSV41_LAZY", flush=True)
+    if lazy is None:
+        size = sum(os.path.getsize(p) for p in glob.glob(os.path.join(path, "*.safetensors")))
+        try:
+            phys = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+        except (ValueError, OSError):
+            phys = int(550e9)
+        lazy = size > 0.8 * phys
+        if lazy:
+            print(f"[load] {size / 1e9:.0f} GB build vs {phys / 1e9:.0f} GB RAM: "
+                  f"staying mmap-lazy (materializing would thrash the compressor)",
+                  flush=True)
+            # Prewarm the page cache sequentially (clean, evictable pages) so
+            # the first forward's page-ins are cache hits — cold-disk faults
+            # inside a GPU command buffer trip Metal's ~watchdog.
+            import time as _time
+            t0 = _time.time()
+            buf = bytearray(1 << 28)
+            for p in sorted(glob.glob(os.path.join(path, "*.safetensors"))):
+                with open(p, "rb", buffering=0) as fh:
+                    while fh.readinto(buf):
+                        pass
+            print(f"[load] page-cache prewarm: {size / 1e9:.0f} GB in "
+                  f"{_time.time() - t0:.0f}s", flush=True)
     cfg = json.load(open(os.path.join(path, "config.json")))
     args = ModelArgs.from_dict(cfg)
     token_map = load_token_map(path, args) if args.engram_layer_ids else None

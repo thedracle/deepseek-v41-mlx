@@ -1,0 +1,2 @@
+[["pipenetwork/DeepSeek-V4.1-Flash-MLX-mixed-4_8bit", "427 GB, 512 GB Mac. ppl 2.8963 on 287k tokens of wikitext-2. 4-bit experts, 8-bit attention, 4-bit engram tables (the 196B engram at 4-bit costs 7.3% free-running vs shipped fp8 - the price of fitting 512 GB)."],
+ ["pipenetwork/DeepSeek-V4.1-Flash-MLX-mixed-4_8bit-engram6", "477 GB, 1 TB machines. 6-bit engram is indistinguishable from the shipped fp8 tables on the per-layer ladder (0.1945 vs 0.1948) - the quality pick where it fits. Cannot run on 512 GiB (measured, four load modes)."]]

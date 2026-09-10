@@ -1,0 +1,35 @@
+"""Create the Hugging Face collection for the DeepSeek-V4.1-Flash MLX builds (dry run without --yes)."""
+from __future__ import annotations
+import argparse
+NAMESPACE, TITLE = "pipenetwork", "DeepSeek-V4.1-Flash MLX"
+DESCRIPTION = ("Apple Silicon (MLX) builds of DeepSeek-V4.1-Flash (754B) with the only runtime that exists for it: "
+               "github.com/PipeNetwork/deepseek-v41-mlx")
+ITEMS = []  # filled in by the caller once measurements exist: (repo_id, note)
+
+def main() -> int:
+    ap = argparse.ArgumentParser(); ap.add_argument("--yes", action="store_true"); ap.add_argument("--items", help="json file of [[repo, note], ...]")
+    args = ap.parse_args()
+    items = ITEMS
+    if args.items:
+        import json; items = json.load(open(args.items))
+    print(f"collection: {NAMESPACE}/{TITLE}\n{DESCRIPTION} ({len(DESCRIPTION)} chars)\n")
+    for item, note in items: print(f"  {item}\n     {note}")
+    if not args.yes:
+        print("\ndry run — pass --yes to create"); return 0
+    from huggingface_hub import HfApi
+    api = HfApi()
+    col = api.create_collection(title=TITLE, namespace=NAMESPACE, description=DESCRIPTION, exists_ok=True)
+    from huggingface_hub.errors import HfHubHTTPError, RepositoryNotFoundError
+    skipped = []
+    for item, note in items:
+        try:
+            api.model_info(item)
+        except (RepositoryNotFoundError, HfHubHTTPError):
+            skipped.append(item); continue
+        api.add_collection_item(col.slug, item_id=item, item_type="model", note=note, exists_ok=True)
+    if skipped:
+        print("skipped (not on the hub yet):", skipped)
+    print(f"\nhttps://huggingface.co/collections/{col.slug}"); return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())

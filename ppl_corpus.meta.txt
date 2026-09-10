@@ -1,0 +1,3 @@
+source: wikitext-2-raw-v1/test (local parquet)
+tokenizer: /Users/david/llm/DeepSeek-V4.1-Flash-src
+tokens: 287597

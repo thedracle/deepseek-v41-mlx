@@ -19,11 +19,15 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT_ROOT = Path("/Users/david/llm/dsv41-out")
 UPSTREAM = "deepseek-ai/DeepSeek-V4.1-Flash"
 CODE_REPO = "https://github.com/PipeNetwork/deepseek-v41-mlx"
-ORDER = ["DeepSeek-V4.1-Flash-MLX-mixed-4_8bit", "DeepSeek-V4.1-Flash-MLX-mixed-4_8bit-engram6"]
+ORDER = ["DeepSeek-V4.1-Flash-MLX-mixed-4_8bit", "DeepSeek-V4.1-Flash-MLX-mixed-4_8bit-engram6",
+         "DeepSeek-V4.1-Flash-REAP25-MLX-mixed-4_8bit", "DeepSeek-V4.1-Flash-REAP37-MLX-mixed-4_8bit", "DeepSeek-V4.1-Flash-REAP50-MLX-mixed-4_8bit"]
 LADDER_NAME = {"DeepSeek-V4.1-Flash-MLX-mixed-4_8bit": "mixed-4_8-engram4",
                "DeepSeek-V4.1-Flash-MLX-mixed-4_8bit-engram6": "mixed-4_8-engram6"}
 RAM = {"DeepSeek-V4.1-Flash-MLX-mixed-4_8bit": "512 GB Mac (tight: 427 GB resident)",
-       "DeepSeek-V4.1-Flash-MLX-mixed-4_8bit-engram6": "1 TB-class machine (477 GB build; a lazy forward transiently needs ~2x)"}
+       "DeepSeek-V4.1-Flash-MLX-mixed-4_8bit-engram6": "1 TB-class machine (477 GB build; a lazy forward transiently needs ~2x)",
+       "DeepSeek-V4.1-Flash-REAP25-MLX-mixed-4_8bit": "384 GB-class (351 GB resident)",
+       "DeepSeek-V4.1-Flash-REAP37-MLX-mixed-4_8bit": "384 GB-class (314 GB resident)",
+       "DeepSeek-V4.1-Flash-REAP50-MLX-mixed-4_8bit": "320 GB-class (275 GB resident)"}
 
 CARD = """---
 license: mit
@@ -85,7 +89,7 @@ uses the owner's cache): see `docs/upstream-notes.md` in the repo.
 | attention (MLA), shared experts, embeddings, `head` | ~14B | 8-bit, group 64 |
 | `wo_a` (block-diagonal output LoRA), hyper-connections, sinks, router biases, compressor, indexer keys, norms | — | unquantized (bf16/fp32) |
 
-## Quality
+{reap_section}## Quality
 
 **Per-layer divergence ladder** vs the bf16-dequantized reference — every one of the 40 decoder
 layers run on identical inputs (16,384 tokens of wikitext-2), teacher-forced and free-running,
@@ -132,6 +136,23 @@ def main() -> int:
     recipe = f"4-bit experts / 8-bit attention&shared / {eb or 'native fp8'}-bit engram"
     gb = sum(p.stat().st_size for p in d.iterdir() if p.is_file()) / 1e9
     lt = ladder_table(OUT_ROOT / "ladder.npz")
+    reap_section = ""
+    if "reap" in cfg:
+        r = cfg["reap"]
+        sal = np.load(OUT_ROOT / r.get("saliency", "saliency.npz"), allow_pickle=True)
+        halves = sal["saliency_halves"]; k = r["kept_experts"]
+        ov = np.mean([len(set(np.argsort(-halves[0, i])[:k]) & set(np.argsort(-halves[1, i])[:k])) / k
+                      for i in range(halves.shape[1])])
+        reap_section = (f"## REAP pruning\n\nThis build keeps **{r['kept_experts']} of {r['original_experts']}** routed experts per layer "
+                        f"({r['ratio_pct']}% pruned; all 40 layers are routed MoE in V4.1 — no hash layers — so all are pruned; attention, shared "
+                        f"experts, engram tables and the router structure are untouched), ranked by REAP saliency: mean applied routing weight x "
+                        f"‖expert output‖ over {r['calibration_tokens']:,} calibration tokens (wikitext-2 *train*, ten languages of Wikipedia, code; "
+                        f"zero 32-gram overlap with the eval set), collected by running the full quantized build. Kept experts carry "
+                        f"{100*r['saliency_retained_mean']:.1f}% of saliency mass on average; two disjoint halves of the calibration set choose the "
+                        f"same kept set {100*ov:.1f}% of the time. Pruning was applied to the already-quantized build (expert subsetting and affine "
+                        f"quantization act on different axes — exactly equivalent to pruning bf16 and requantizing). Saliency retention is not a "
+                        f"quality measure; the perplexity below is.\n\n")
+
     res_p = ROOT / "ppl_results.json"
     res = json.load(open(res_p)) if res_p.exists() else {}
     ppl_section = ""
@@ -140,6 +161,13 @@ def main() -> int:
         ppl_section = (f"**Perplexity** (wikitext-2 test, {r['tokens']:,} tokens in {r['windows']} windows of {r['seq_len']}, "
                        f"through this runtime): **{r['perplexity']:.4f}** [{r['ci95'][0]:.4f}, {r['ci95'][1]:.4f}]. "
                        f"Greedy generation is coherent (collapse check).")
+        anchor = "DeepSeek-V4.1-Flash-MLX-mixed-4_8bit"
+        if "reap" in cfg and anchor in res:
+            sys.path.insert(0, str(ROOT / "scripts")); from ppl_table import paired
+            point, lo, hi, worse, nw = paired(res, anchor, name)
+            ratio = np.exp(point); rlo, rhi = np.exp(lo), np.exp(hi)
+            ppl_section += (f" Paired against the unpruned build on identical windows: ratio **x{ratio:.4f}** "
+                            f"[{rlo:.4f}, {rhi:.4f}], worse on {worse}/{nw} windows.")
     else:
         ppl_section = ("**Perplexity is not measurable for this build on our 512 GiB machine** (the 477 GB build plus "
                        "activations exceeds it in every load mode — four were tried). Its quality case is the ladder above: "
@@ -147,7 +175,7 @@ def main() -> int:
                        "identical to the measured engram-4 build (ppl 2.8963 [2.7103, 3.0933]). Strict-loaded: zero missing / "
                        "zero unexpected tensors.")
     card = CARD.format(upstream=UPSTREAM, code_repo=CODE_REPO, repo_name=name, recipe=recipe, gb=gb,
-                       ram=RAM.get(name, ""), engram_desc=engram_desc, ladder_table=lt, ppl_section=ppl_section)
+                       ram=RAM.get(name, ""), engram_desc=engram_desc, ladder_table=lt, ppl_section=ppl_section, reap_section=reap_section)
     (d / "README.md").write_text(card)
     print(f"repo {args.repo}\ndir {d}\nfiles {sum(1 for p in d.iterdir() if p.is_file())}, {gb:.1f} GB\n{lt}\n\n{ppl_section[:200]}")
     if not args.yes:

@@ -76,6 +76,14 @@ build (ppl **2.8963** [2.7103, 3.0933] over 286,580 tokens, coherent smoke), eng
 1 TB build, and 8/6-bit exist only as ladder rows. Uniform 4-bit is dominated (3 GB smaller,
 30% worse free-running).
 
+**REAP-pruned tiers** (`scripts/reap_calibrate.py` on the resident quantized build, `scripts/prune_build.py`
+pruning the quantized tensors directly — expert axis vs quant-group axis, exactly equivalent to
+prune-then-requantize; engram shards hardlinked across builds): REAP25 (288/384 experts, 351 GB) costs
+**×1.0281** [1.018, 1.039] paired vs the unpruned build — the V4 family prunes nearly free at 25% — while
+REAP50 (275 GB) costs ×1.1681 with visibly degraded generation style; REAP37 (314 GB) was built and
+measured (×1.0766) but not published — it serves no RAM tier REAP25 doesn't. Split-half calibration
+agreement 88–93%.
+
 ## Layout
 
 | path | what |

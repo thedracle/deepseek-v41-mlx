@@ -55,6 +55,33 @@ MoE path; oMLX `wsdpa`; llama.cpp Metal MoE; DeepSeek `inference/kernel.py` (Til
 FlashMLA Metal ports. Candidate bar: ≥1.5× on real shapes and localized index lists in a micro-bench,
 then survives the in-situ A/B.
 
+
+## Phase 0 results (2026-09-11)
+
+- **A4 — MLX bump: nothing available.** 0.32.2 and mlx-lm 0.31.3 are the newest releases.
+- **A2 — sync audit: one host round-trip per token, confirmed.** `Model.__call__` → `np.array(input_ids)` for
+  the engram hasher. Fixed on branch `hasher` (hash in MLX ops, int64 semantics verified bit-for-bit,
+  history as an mx.array; numpy path stays the reference path). All three suites pass.
+- **A1 — Metal System Trace of 8 decode steps (`scripts/trace_decode.py`, `metal-gpu-intervals`):**
+  - **GPU busy 99 %** of the step: 89.2 ms busy of 90.1 ms wall, ~220 command buffers per step
+    (~30 kernels each), idle gaps between command buffers ~1 µs (p90 1 µs), CPU→GPU queue depth
+    ~2.8 ms. The GPU is never starved within a step.
+  - The bench's 105 ms/step vs the trace's 90 ms GPU time ⇒ ~15 ms/step is CPU graph construction
+    that runs *serially* after the previous step's sync. That 15 ms (≈14 %) is the entire prize for
+    pipelining (L1 + async_eval); it cannot exceed that.
+  - Therefore "launch-bound" means: ~6,500 kernels averaging ~14 µs each, each paying fixed
+    per-dispatch cost *inside* the GPU (scheduling, barriers, cache flushes), not a CPU that can't feed
+    it. The lever is **fewer, larger kernels** (L2 `mx.compile` fusion, L3 hand-fused chains, K1 fused
+    MoE), and the bandwidth floor (~13 ms) says the ceiling for that is large.
+  - Per-kernel names/durations need the shader-profiler instrument (empty in the System Trace
+    template); the command-buffer view is enough to settle the busy/idle question.
+  - **Graph build measured** (tiny config, same op structure, scaled 8 → 40 layers): 7 ms/step with the
+    fast paths (16 ms on the reference path). So the CPU side is ~7 % of a step and pipelining could
+    never hide more than that — consistent with async_eval (+1.3 %) and the on-device hasher
+    (greedy 9.9 vs 9.8 prose, 8.6 vs 8.4 code: noise-level). **L1 is a cleanliness win, not a speed win.**
+  - Conclusion for the plan: decode time is ~90 ms of GPU execution of ~6,500 small kernels. Only fusion
+    (fewer kernels: L2/L3/K1) or fewer steps (DSpark: S1/S3) can move it. Pipelining is exhausted.
+
 ## Not worth pursuing (measured or bounded)
 
 - pruning for speed: REAP25 +12 % greedy, +1 % with DSpark, ×1.028 ppl — memory tool, not speed

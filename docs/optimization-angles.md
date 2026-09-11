@@ -56,6 +56,26 @@ FlashMLA Metal ports. Candidate bar: ≥1.5× on real shapes and localized index
 then survives the in-situ A/B.
 
 
+
+### S1 result: chained drafting is not viable (measured, `scripts/dspark_chain_diag.py`)
+
+The ring the drafter attends to is built from TARGET hiddens (`main_proj` of layers 37/38/39), which do
+not exist for unverified tokens. A second block drafted before verification, teacher-forced over 150
+steps, per-position accuracy for positions 6–10:
+
+| variant | prose | code | given block 1 all-correct |
+|---|---|---|---|
+| block 1 (positions 1–5, for reference) | 80 61 41 28 16 % | 87 72 57 47 33 % | — |
+| (a) ring seeded with the drafter's own residual | 5 1 2 3 2 % | 11 6 7 3 2 % | prose 20 7 0 0 0; code 26 13 5 5 5 |
+| (b) no keys for block-1 positions | 4 4 4 2 3 % | 14 10 9 8 8 % | prose 13 0 13 0 0; code 38 26 23 18 13 |
+
+Dead. The confidence head is well calibrated (mean logit per position: prose 2.75 1.21 0.43 −0.18
+−0.58; code 4.77 2.89 1.72 1.17 0.60), so S2 (trim the block where confidence < 0) remains, worth a few
+percent on prose. The remaining speculative lever is S3 (draft trees within one block: the Markov
+sequential argmax can produce a sibling branch from the same block logits at no extra drafter cost;
+the verify needs a tree-aware window index matrix — the compressed-KV pollution is the same class as
+the chunk path, and the committed state is always re-forwarded clean).
+
 ## Phase 0 results (2026-09-11)
 
 - **A4 — MLX bump: nothing available.** 0.32.2 and mlx-lm 0.31.3 are the newest releases.

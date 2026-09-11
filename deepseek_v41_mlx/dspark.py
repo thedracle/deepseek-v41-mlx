@@ -58,10 +58,12 @@ class DSparkAttention(nn.Module):
         ring[:, slots] = kv.astype(ring.dtype)
         return ring
 
-    def __call__(self, x, last_pos, cos, sin, ring):
-        """x [1,B,dim] = the draft block at positions last_pos+1..last_pos+B."""
+    def __call__(self, x, last_pos, cos, sin, ring, pos_offset=0):
+        """x [1,B,dim] = the draft block at positions last_pos+1+pos_offset .. +B (pos_offset > 0 only
+        for chained drafting experiments: the block sits past tokens whose keys are not in the ring)."""
         b, B, _ = x.shape
-        c, s = cos[last_pos + 1:last_pos + 1 + B], sin[last_pos + 1:last_pos + 1 + B]
+        p0 = last_pos + 1 + pos_offset
+        c, s = cos[p0:p0 + B], sin[p0:p0 + B]
         q = self.wq_b(self.q_norm(self.wq_a(x))).reshape(b, B, self.n_heads, self.head_dim)
         q = rope_tail(q, self.rd, c, s)
         kv = fake_quant_fp8_ue8m0(rope_tail(self.kv_norm(self.wkv(x)), self.rd, c, s), 32)
@@ -110,11 +112,11 @@ class DSparkStage(nn.Module):
             self.markov_head = MarkovHead(args.vocab_size, cfg["dspark_markov_rank"])
             self.confidence_head = ConfidenceHead(args.dim + cfg["dspark_markov_rank"])
 
-    def __call__(self, x, pre_mix, last_pos, cos, sin, ring):
+    def __call__(self, x, pre_mix, last_pos, cos, sin, ring, pos_offset=0):
         residual = x
         attn_pre, attn_post, attn_comb = hc_mixes(x, self.hc_attn_fn, self.hc_attn_scale, self.hc_attn_base,
                                                   self.hc_mult, self.hc_iters, self.norm_eps, self.hc_eps)
-        h = self.attn(self.attn_norm(hc_pre(x, pre_mix)), last_pos, cos, sin, ring)
+        h = self.attn(self.attn_norm(hc_pre(x, pre_mix)), last_pos, cos, sin, ring, pos_offset)
         x = hc_post(h, residual, attn_post, attn_comb)
         residual = x
         ffn_pre, ffn_post, ffn_comb = hc_mixes(x, self.hc_ffn_fn, self.hc_ffn_scale, self.hc_ffn_base,
@@ -157,17 +159,17 @@ class DSpark(nn.Module):
         (which sits at position last_pos+1 and is not yet in the target cache)."""
         return self.draft_logits(input_token)[1]
 
-    def draft_logits(self, input_token, with_confidence=False):
+    def draft_logits(self, input_token, with_confidence=False, pos_offset=0, return_hidden=False):
         """(logits [1,B,V] with the Markov bias applied, drafted tokens, confidence [1,B] or None).
         Mirrors the reference's forward_spec -> forward_head at temperature 0."""
         B, lp = self.block_size, self.last_pos
-        cos, sin = self._freqs(lp + B + 2)
+        cos, sin = self._freqs(lp + B + 2 + pos_offset)
         ids = mx.array([[input_token] + [self.noise] * (B - 1)])
         x = self._embed(ids)
         x = mx.broadcast_to(x[:, :, None, :], (1, B, self.args.hc_mult, x.shape[-1]))
         pre_mix = make_identity_pre_mix(1, B, self.args.hc_mult)
         for st, ring in zip(self.stages, self.rings):
-            x, pre_mix = st(x, pre_mix, lp, cos, sin, ring)
+            x, pre_mix = st(x, pre_mix, lp, cos, sin, ring, pos_offset)
         last = self.stages[-1]
         xp = hc_pre(x, pre_mix)                                          # confidence reads the PRE-norm hidden
         h = last.norm(xp)
@@ -183,7 +185,8 @@ class DSpark(nn.Module):
         if with_confidence:
             me = mx.stack(embeds, axis=1)                                 # [1, B, rank]
             conf = last.confidence_head.proj(mx.concatenate([xp.astype(mx.float32), me.astype(mx.float32)], axis=-1))[..., 0]
-        return mx.stack(cols, axis=1), mx.stack(toks)[:, 0].tolist(), conf
+        out = (mx.stack(cols, axis=1), mx.stack(toks)[:, 0].tolist(), conf)
+        return out + (xp,) if return_hidden else out
 
 
 def load_dspark(target, model_dir, path=None):

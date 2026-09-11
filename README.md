@@ -97,3 +97,17 @@ agreement 88–93%.
 | `tests/test_parity.py` | the validation above |
 | `docs/reference/` | DeepSeek's inference code (the reference) |
 | `docs/upstream-notes.md` | the decode bug + Metal/MLX operational findings |
+
+
+## turbo (fork): faster decode, native MTP speculative decoding, server
+
+`deepseek_v41_mlx/turbo/` adds an opt-in patch stack (6.69 -> 10.10 tok/s greedy on an M3 Ultra),
+the release's own DSpark/MTP draft head as a speculative decoder (23.5 tok/s on code), and an
+OpenAI-compatible server with a prefix cache. Everything is measured and the losing attempts are
+kept with their reasons: see [docs/TURBO.md](docs/TURBO.md).
+
+```
+python scripts/turbo/run.py "prompt"                 # greedy + DSpark, patch stack on
+python -m deepseek_v41_mlx.turbo.mtp_convert          # once: build the 15 GB drafter from 3 shards
+python -m deepseek_v41_mlx.turbo.server --port 8001   # OpenAI-compatible
+```

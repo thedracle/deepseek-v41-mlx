@@ -145,6 +145,8 @@ class EngramHasher:
         self.primes, self.offsets = build_layout(args)          # [L, G-1, H], [L, cols]
         self.multipliers = compute_hash_multipliers(
             args.engram_layer_ids, self.max_ngram, n_compressed)  # [L, G]
+        # device copies for the on-device path (int64 multiply/xor/mod match numpy, wraparound included)
+        self._mx = None
         # sanity: bucket layout must match the declared table sizes
         sums = self.primes.reshape(len(args.engram_layer_ids), -1).sum(-1)
         if tuple(int(s) for s in sums) != tuple(args.engram_num_embeddings):
@@ -158,6 +160,8 @@ class EngramHasher:
         ``ids_cache`` [B, max_seq] carries compressed ids across chunks; this
         call writes positions [start_pos, start_pos+L) into it.
         """
+        if isinstance(ids_cache, mx.array):
+            return self._call_device(input_ids, start_pos, ids_cache)
         input_ids = np.asarray(input_ids)
         batch, seqlen = input_ids.shape
         compressed = self.token_map[input_ids]
@@ -178,6 +182,35 @@ class EngramHasher:
             rolling = np.bitwise_xor(rolling, products[..., i])
             hashes.append(rolling[..., None] % self.primes[:, i - 1])  # [B, L, nL, H]
         return np.concatenate(hashes, axis=-1) + self.offsets
+
+    def _call_device(self, input_ids: mx.array, start_pos: int, ids_cache: mx.array) -> mx.array:
+        """Same hash, entirely in MLX ops, so decode never waits for the GPU to hand the token
+        back to the host (the numpy path forced a full pipeline drain every token — the one
+        host round-trip in the per-token forward)."""
+        if self._mx is None:
+            self._mx = (mx.array(self.token_map), mx.array(self.multipliers), mx.array(self.primes),
+                        mx.array(self.offsets))
+        token_map, multipliers, primes, offsets = self._mx
+        if not isinstance(input_ids, mx.array):        # callers with host ids (stream.py) still work
+            input_ids = mx.array(np.asarray(input_ids))
+        batch, seqlen = input_ids.shape
+        compressed = token_map[input_ids]                                          # [B, L] int64
+        ids_cache[:batch, start_pos:start_pos + seqlen] = compressed
+        positions = mx.broadcast_to(mx.arange(start_pos, start_pos + seqlen)[None], (batch, seqlen))
+        tokens, blocked = [], mx.zeros((batch, seqlen), dtype=mx.bool_)
+        pad = mx.array(self.pad_id, dtype=mx.int64)
+        for shift in range(self.max_ngram):
+            src_pos = mx.maximum(positions - shift, 0)
+            source = mx.take_along_axis(ids_cache[:batch], src_pos, axis=1)
+            blocked = blocked | (positions < shift)
+            tokens.append(mx.where(blocked, pad, source))
+        tokens = mx.stack(tokens, axis=-1)                                         # [B, L, G]
+        products = tokens[:, :, None, :] * multipliers                             # [B, L, nL, G]
+        rolling, hashes = products[..., 0], []
+        for i in range(1, self.max_ngram):
+            rolling = mx.bitwise_xor(rolling, products[..., i])
+            hashes.append(rolling[..., None] % primes[:, i - 1])                   # [B, L, nL, H]
+        return mx.concatenate(hashes, axis=-1) + offsets
 
 
 class EngramEmbedding(nn.Module):

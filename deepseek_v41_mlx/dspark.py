@@ -222,7 +222,10 @@ def forward_capture(model, input_ids, cache):
     start_pos = cache.offset; b, n = input_ids.shape
     hashes = None
     if model.engram_hasher is not None:
-        hashes = mx.array(model.engram_hasher(np.array(input_ids, dtype=np.int64), start_pos, cache.engram_ids))
+        if isinstance(cache.engram_ids, mx.array):
+            hashes = model.engram_hasher(input_ids, start_pos, cache.engram_ids)
+        else:
+            hashes = mx.array(model.engram_hasher(np.array(input_ids, dtype=np.int64), start_pos, cache.engram_ids))
     h = model.embed(input_ids)
     h = mx.broadcast_to(h[:, :, None, :], (b, n, model.hc_mult, h.shape[-1]))
     pre_mix = make_identity_pre_mix(b, n, model.hc_mult); shared = SharedState(); mains = []

@@ -26,7 +26,7 @@ def _cache_snapshot(cache):
             (lc.comp_state.kv_state[:], lc.comp_state.score_state[:])
             if lc.comp_state is not None else None,
         ))
-    eng = cache.engram_ids.copy() if cache.engram_ids is not None else None
+    eng = (cache.engram_ids[:] if isinstance(cache.engram_ids, mx.array) else cache.engram_ids.copy()) if cache.engram_ids is not None else None
     return cache.offset, layers, eng
 
 

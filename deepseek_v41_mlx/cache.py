@@ -23,6 +23,7 @@ import numpy as np
 import mlx.core as mx
 
 from .compressor import CompressorState
+from . import fast
 from .config import ModelArgs
 
 
@@ -79,5 +80,6 @@ class ModelCache:
         self.offset = 0
         self.layers = [LayerCache(bsz, args, i, self.max_seq_len, dtype)
                        for i in range(args.n_layers)]
-        self.engram_ids = (np.zeros((bsz, self.max_seq_len), dtype=np.int64)
+        self.engram_ids = ((mx.zeros((bsz, self.max_seq_len), dtype=mx.int64) if fast.ENABLED
+                            else np.zeros((bsz, self.max_seq_len), dtype=np.int64))
                            if args.engram_layer_ids else None)

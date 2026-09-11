@@ -126,9 +126,11 @@ class Model(nn.Module):
 
         hashes = None
         if self.engram_hasher is not None:
-            ids_np = np.array(input_ids, dtype=np.int64)
-            hashes = self.engram_hasher(ids_np, start_pos, cache.engram_ids)
-            hashes = mx.array(hashes)                # [b, n, n_engram_layers, cols]
+            if isinstance(cache.engram_ids, mx.array):      # fast path: hash on-device, no sync
+                hashes = self.engram_hasher(input_ids, start_pos, cache.engram_ids)
+            else:
+                ids_np = np.array(input_ids, dtype=np.int64)
+                hashes = mx.array(self.engram_hasher(ids_np, start_pos, cache.engram_ids))  # [b, n, nL, cols]
         elif self.args.engram_layer_ids:
             raise RuntimeError(
                 "model has engram layers but no token map — call "

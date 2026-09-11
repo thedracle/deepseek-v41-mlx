@@ -164,6 +164,38 @@ route+gather+SwiGLU), i.e. Phase 3 work.
   fixes (#4009, #3922), GQA vector SDPA batch-offset fix (#4431). No PyPI release carries them yet.
   → A4 revisited: building MLX from `main` in a separate venv to measure (in progress).
 
+
+### A4 result (final): MLX `main` (0.32.3.dev, 2026-09-11) — no gain; staying on 0.32.2
+
+Built from source, same bench, same process structure: greedy 9.7 / 9.4 tok/s (0.32.2: 9.9 / 9.6),
+DSpark 15.0 / 24.0 (13.8 / 24.8), prefill 378 (379). Micro: SDPA D=512 decode 356 vs 326 µs, qmm M=1
+274 vs 234 µs. The post-0.32.2 D512 vector-attention path does not help our shapes. Closed.
+
+## Scorecard (2026-09-11, end of goal pass)
+
+| angle | evidence | verdict |
+|---|---|---|
+| A1 GPU trace | 99 % busy, 220 cmd buffers/step, 1 µs gaps | pipelining exhausted; fusion is the only greedy lever |
+| A2 sync audit | one host round-trip (engram hash) | fixed (L1), neutral speed |
+| A3 per-layer split | superseded by A1 + earlier component profile | closed |
+| A4 MLX bump | 0.32.2 is latest; `main` measured, no gain | closed |
+| S1 chained drafting | 4–14 % accuracy at positions 6–10 | dead |
+| **S2 confidence trimming** | prose +7 %, code +19 % | **integrated (default)** |
+| S3 draft trees | not measured; 2–3 days | open — the remaining speculative lever |
+| S4 sampling | not a speed angle | open, cheap, on request |
+| **L1 on-device hasher** | 9.9 vs 9.8 | **integrated** (cleanliness; enables true async) |
+| L2 mx.compile | 10.2 → 10.1–10.6 | dead (nothing left for the compiler to fuse) |
+| L3 hand-fused chains | gate chain: 320 → 241 µs micro, 9.9 → 9.8 in situ | closed as a class: chain fusion around matmuls does not move the step |
+| K1 fused MoE | the gate half measured (above); the gather/SwiGLU half untested | open, ≤ 8 % ceiling, days, poor odds |
+| K2 expert-major prefill MoE | not attempted | open, 1.5–2× prefill, ~1 week, high risk |
+| K3 small-M qmm | upstream: known, open-ended, "PRs welcome" | closed for us |
+| K4 prefill attention kernel | v4 lost in situ | closed unless K2 lands first |
+| chunk 4096/8192 | unpruned build lacks the headroom | closed (config) |
+| batching | weeks | open, not pursued |
+
+Net integrated today: S2 (+7 % prose, +19 % code on DSpark) and L1. Greedy is at the runtime's floor from
+Python; the remaining candidates are S3 (days, prose) and K2 (a week, prefill), both user decisions.
+
 ## Not worth pursuing (measured or bounded)
 
 - pruning for speed: REAP25 +12 % greedy, +1 % with DSpark, ×1.028 ppl — memory tool, not speed

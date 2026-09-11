@@ -17,11 +17,19 @@ Model-level: the engram compressed-token-id history, and the global offset.
 
 from __future__ import annotations
 
+import functools
+
 import numpy as np
 import mlx.core as mx
 
 from .compressor import CompressorState
 from .config import ModelArgs
+
+
+@functools.lru_cache(maxsize=4096)
+def _ring_slots(first: int, count: int, window: int) -> mx.array:
+    """Ring slots for positions [first, first+count): memoised, decode asks 40 layers the same."""
+    return (first + mx.arange(count)) % window
 
 
 class LayerCache:
@@ -54,17 +62,14 @@ class LayerCache:
         wp = min(pos, w)
         if wp == 0:
             return self.win_kv[:, :0]
-        first = pos - wp
-        slots = (first + mx.arange(wp)) % w
-        return self.win_kv[:, slots]
+        return self.win_kv[:, _ring_slots(pos - wp, wp, w)]
 
     def write_window(self, pos: int, kv: mx.array):
         """Write chunk KV at positions [pos, pos+n) into the ring."""
         n = kv.shape[1]
         keep = min(n, self.window)
         tail = kv[:, n - keep:]
-        slots = (pos + n - keep + mx.arange(keep)) % self.window
-        self.win_kv[:, slots] = tail.astype(self.dtype)
+        self.win_kv[:, _ring_slots(pos + n - keep, keep, self.window)] = tail.astype(self.dtype)
 
 
 class ModelCache:

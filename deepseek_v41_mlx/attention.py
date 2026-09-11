@@ -26,17 +26,21 @@ are the same code path.
 
 from __future__ import annotations
 
+import functools
+
 import mlx.core as mx
 import mlx.nn as nn
 
 from .compressor import Compressor
 from .config import ModelArgs
+from . import fast
 from .fakequant import fake_quant_fp4_e4m3, fake_quant_fp8_ue8m0
 from .indexer import Indexer
 from .layers import RMSNorm, precompute_freqs_cis, rope_tail
 from .sparse_attention import sparse_attn
 
 
+@functools.lru_cache(maxsize=1024)   # decode asks 40 layers the same (wp, 1, window)
 def window_idx_matrix(wp: int, n: int, window: int) -> mx.array:
     """[n, W_eff] window indices into concat([prev_window(wp), chunk(n)]).
 
@@ -95,6 +99,18 @@ class Attention(nn.Module):
         # test hooks (negative controls)
         self._break_rope_inverse = False
         self._break_sink = False
+
+    def _wo_a_f32(self):
+        """wo_a stays unquantized bf16 (block-diagonal). Casting it to fp32 per call is a 134 MB
+        write per layer per token; cache the cast (rebuilt if the weight is reassigned)."""
+        w = self.wo_a.weight
+        if not fast.ENABLED:
+            return w.reshape(self.n_groups, self.o_lora_rank, -1).astype(mx.float32)
+        c = getattr(self, "_wo_a_cache", None)
+        if c is None or c[0] is not w:
+            c = (w, w.reshape(self.n_groups, self.o_lora_rank, -1).astype(mx.float32))
+            self._wo_a_cache = c
+        return c[1]
 
     def _freqs(self, upto: int):
         if self._cos is None or self._cos.shape[0] < upto:
@@ -174,6 +190,5 @@ class Attention(nn.Module):
         if not self._break_rope_inverse:
             o = rope_tail(o, rd, c_q, s_q, inverse=True)
         o = o.reshape(bsz, n, self.n_groups, -1)
-        wo_a = self.wo_a.weight.reshape(self.n_groups, self.o_lora_rank, -1)
-        o = mx.einsum("bsgd,grd->bsgr", o.astype(mx.float32), wo_a.astype(mx.float32))
+        o = mx.einsum("bsgd,grd->bsgr", o.astype(mx.float32), self._wo_a_f32())
         return self.wo_b(o.reshape(bsz, n, -1).astype(x.dtype))

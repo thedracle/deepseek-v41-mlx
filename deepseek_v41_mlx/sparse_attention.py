@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import mlx.core as mx
 
+from . import fast
+
 NEG_INF = -1e30
 
 
@@ -34,6 +36,13 @@ def _gather_kv(kv: mx.array, idx: mx.array) -> mx.array:
 def sparse_attn(q: mx.array, kv: mx.array, attn_sink: mx.array, topk_idxs: mx.array,
                 softmax_scale: float, chunk: int = 256) -> mx.array:
     """q [b,m,h,d], kv [b,n,d], attn_sink [h], topk_idxs [b,m,k] (-1 = masked)."""
+    if fast.ENABLED:
+        return fast.sparse_attn(q, kv, attn_sink, topk_idxs, softmax_scale, chunk, _sparse_attn_ref)
+    return _sparse_attn_ref(q, kv, attn_sink, topk_idxs, softmax_scale, chunk)
+
+
+def _sparse_attn_ref(q, kv, attn_sink, topk_idxs, softmax_scale, chunk=256):
+    """The reference chain: gather -> einsum -> masked softmax with the sink in the denominator."""
     b, m, h, d = q.shape
     sink = attn_sink.astype(mx.float32).reshape(1, 1, h, 1)
 

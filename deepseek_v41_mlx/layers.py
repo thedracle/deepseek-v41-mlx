@@ -16,6 +16,8 @@ import math
 import mlx.core as mx
 import mlx.nn as nn
 
+from . import fast
+
 
 class RMSNorm(nn.Module):
     """RMSNorm computed in fp32, returning the input dtype (matches reference)."""
@@ -27,6 +29,8 @@ class RMSNorm(nn.Module):
 
     def __call__(self, x: mx.array) -> mx.array:
         dtype = x.dtype
+        if fast.ENABLED:   # mx.fast.rms_norm in fp32 is bit-identical to the reduction below
+            return mx.fast.rms_norm(x.astype(mx.float32), self.weight, self.eps).astype(dtype)
         xf = x.astype(mx.float32)
         var = mx.mean(mx.square(xf), axis=-1, keepdims=True)
         xf = xf * mx.rsqrt(var + self.eps)
@@ -81,6 +85,8 @@ def apply_rotary_emb(x: mx.array, cos: mx.array, sin: mx.array, inverse: bool = 
 
 def rope_tail(x: mx.array, rd: int, cos: mx.array, sin: mx.array, inverse: bool = False) -> mx.array:
     """Apply rope to the last ``rd`` channels, leave the rest untouched."""
+    if fast.ENABLED:
+        return fast.rope_tail(x, rd, cos, sin, inverse)
     return mx.concatenate([x[..., :-rd], apply_rotary_emb(x[..., -rd:], cos, sin, inverse)], axis=-1)
 
 

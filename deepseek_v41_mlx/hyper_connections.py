@@ -22,12 +22,16 @@ from __future__ import annotations
 
 import mlx.core as mx
 
+from . import fast
+
 
 def split_sinkhorn(mixes: mx.array, hc_scale: mx.array, hc_base: mx.array,
                    hc_mult: int = 4, sinkhorn_iters: int = 20, eps: float = 1e-6):
     """Split one projection into (pre, post, comb) — transcribed from
     ``hc_split_sinkhorn_kernel``. Layout: first hc entries -> pre, next hc ->
     post, remaining hc*hc -> comb row-major."""
+    if fast.ENABLED and hc_mult == 4:
+        return fast.sinkhorn_split(mixes, hc_scale, hc_base, hc_mult, sinkhorn_iters, eps)
     hc = hc_mult
     m = mixes.astype(mx.float32)
     scale = hc_scale.astype(mx.float32)
@@ -61,6 +65,8 @@ def hc_mixes(x: mx.array, hc_fn: mx.array, hc_scale: mx.array, hc_base: mx.array
 
 def hc_pre(x: mx.array, pre_mix: mx.array) -> mx.array:
     """Collapse the hc copies into one: [b,s,hc,d] x [b,s,hc] -> [b,s,d], fp32 sum."""
+    if fast.ENABLED:
+        return fast.hc_pre(x, pre_mix)
     y = mx.sum(pre_mix[..., None].astype(mx.float32) * x.astype(mx.float32), axis=2)
     return y.astype(x.dtype)
 
@@ -71,6 +77,8 @@ def hc_post(x: mx.array, residual: mx.array, post: mx.array, comb: mx.array) -> 
     x [b,s,d], residual [b,s,hc,d], post [b,s,hc], comb [b,s,hc,hc] -> [b,s,hc,d].
     The residual must sit on the j (summed) axis of the product.
     """
+    if fast.ENABLED:
+        return fast.hc_post(x, residual, post, comb)
     prod = comb[..., None] * residual[..., :, None, :]     # [b, s, j, k, d]
     out = post[..., None] * x[..., None, :] + mx.sum(prod, axis=2)
     return out.astype(x.dtype)

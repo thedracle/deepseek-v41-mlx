@@ -13,6 +13,7 @@ from __future__ import annotations
 import mlx.core as mx
 
 from .model import Model
+from . import fast
 
 
 def _cache_snapshot(cache):
@@ -82,15 +83,38 @@ def greedy_generate(model: Model, input_ids, max_new_tokens: int = 64,
     logits = None
     for a in range(0, ids.shape[1], prefill_chunk):
         logits = _forward(model, ids[:, a:a + prefill_chunk], cache)
-    out = []
     tok = mx.argmax(logits[:, -1], axis=-1)
-    for _ in range(max_new_tokens):
-        t = int(tok[0])
-        if t == eos_id:
-            break
-        out.append(t)
-        logits = _forward(model, tok[:, None], cache)
+    if not fast.ENABLED:
+        out = []
+        for _ in range(max_new_tokens):
+            t = int(tok[0])
+            if t == eos_id:
+                break
+            out.append(t)
+            logits = _forward(model, tok[:, None], cache)
+            tok = mx.argmax(logits[:, -1], axis=-1)
+        return out
+    # Pipelined decode: _forward evals every step, so the CPU builds step N+1's graph (~3,000
+    # ops of dispatch) only after the GPU finishes step N. Enqueue with mx.async_eval instead and
+    # keep the tokens on-device; the EOS check is batched every 16 steps. The per-step Metal
+    # timeout fallback is kept for prefill chunks only (a 1-token decode step cannot time out).
+    toks = []
+    mx.async_eval(tok)
+    for i in range(max_new_tokens):
+        toks.append(tok)
+        logits = model(tok[:, None], cache, last_logit_only=True)
         tok = mx.argmax(logits[:, -1], axis=-1)
+        mx.async_eval(tok)
+        if eos_id >= 0 and (i + 1) % 16 == 0:
+            recent = mx.stack(toks[-16:])
+            mx.eval(recent)
+            hit = [j for j, v in enumerate(recent[:, 0].tolist()) if v == eos_id]
+            if hit:
+                toks = toks[:len(toks) - 16 + hit[0]]
+                break
+    out = mx.stack(toks)[:, 0].tolist() if toks else []
+    if eos_id >= 0 and eos_id in out:
+        out = out[:out.index(eos_id)]
     return out
 
 

@@ -25,6 +25,7 @@ import mlx.nn as nn
 from mlx_lm.models.switch_layers import SwitchGLU
 
 from .config import ModelArgs
+from . import fast
 
 
 class ClampedSwiGLU(nn.Module):
@@ -55,8 +56,17 @@ class Gate(nn.Module):
         self.bias = mx.zeros((args.n_routed_experts,), dtype=mx.float32)
         self.bias_vl = mx.zeros((args.n_routed_experts,), dtype=mx.float32)
 
+    def _w_f32(self):
+        w = self.weight
+        if not fast.ENABLED:
+            return w.astype(mx.float32)
+        c = getattr(self, "_w_cache", None)
+        if c is None or c[0] is not w:
+            c = (w, w.astype(mx.float32)); self._w_cache = c
+        return c[1]
+
     def __call__(self, x: mx.array):
-        scores = (x.astype(mx.float32) @ self.weight.astype(mx.float32).T) / self.gate_temp
+        scores = (x.astype(mx.float32) @ self._w_f32().T) / self.gate_temp
         if self.score_func == "softmax":
             scores = mx.softmax(scores, axis=-1)
         elif self.score_func == "sigmoid":

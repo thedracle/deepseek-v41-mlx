@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import mlx.core as mx
 
+from . import fast
+
 FP8_MAX = 448.0     # e4m3fn
 FP4_MAX = 6.0       # e2m1
 
@@ -84,6 +86,8 @@ def fake_quant_fp8_ue8m0(x: mx.array, block: int = 32) -> mx.array:
     """act_quant(..., scale_fmt='ue8m0', inplace=True): fp8 round-trip, pow2 scales."""
     if DISABLE:
         return x
+    if fast.ENABLED and block == 32:
+        return fast.fake_quant_fp8_ue8m0(x, block)
     dtype = x.dtype
     shape = x.shape
     xb = _blockify(x.astype(mx.float32), block)
@@ -97,6 +101,8 @@ def fake_quant_fp4_ue8m0(x: mx.array, block: int = 32) -> mx.array:
     """fp4_act_quant(..., scale_dtype=e8m0, inplace=True): the indexer's q/k path."""
     if DISABLE:
         return x
+    if fast.ENABLED and block == 32:
+        return fast.fake_quant_fp4_ue8m0(x, block)
     dtype = x.dtype
     shape = x.shape
     xb = _blockify(x.astype(mx.float32), block)
@@ -110,6 +116,8 @@ def fake_quant_fp4_e4m3(x: mx.array, block: int = 16) -> mx.array:
     """fp4_act_quant(..., 16, scale_dtype=e4m3, inplace=True): the compressed-KV path."""
     if DISABLE:
         return x
+    if fast.ENABLED and block == 16:
+        return fast.fake_quant_fp4_e4m3(x, block)
     dtype = x.dtype
     shape = x.shape
     xb = _blockify(x.astype(mx.float32), block)

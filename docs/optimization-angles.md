@@ -77,6 +77,15 @@ the verify needs a tree-aware window index matrix — the compressed-KV pollutio
 the chunk path, and the committed state is always re-forwarded clean).
 
 
+
+### K1-lite result: fused gate top-k chain — no in-situ gain (kept opt-in, `DSV41_GATE_KERNEL=1`)
+
+One Metal kernel for the gate's post-matmul chain (temp → sqrt(softplus) → +bias → top-6 → gather →
+normalise → route_scale), replacing ~8 launches per layer. Synthetic: 320 → 241 µs at M=1, expert sets
+identical, weights within 1e-7. In situ (same process, flag flipped): greedy 9.9 → 9.8 prose, 9.6 → 9.5
+code; DSpark 13.8 → 13.4, 24.8 → 22.3. Noise or slightly negative: the threadgroup argmax rounds cost
+about what MLX's argpartition did. Fourth kernel to win a micro-bench and lose in situ.
+
 ### S2 result: confidence trimming is a win — integrated (default `DSV41_CONF_MIN=0.0`)
 
 `scripts/s2_conf_trim.py`, 200-token answers, DSpark: drop drafted tokens from the first position whose

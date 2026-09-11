@@ -16,6 +16,7 @@ import mlx.core as mx
 
 ENABLED = os.environ.get("DSV41_FAST", "1") != "0"
 _HC = 4                      # the Sinkhorn kernel is specialised for hc_mult=4 (V4.1's value)
+GATE_KERNEL = os.environ.get("DSV41_GATE_KERNEL", "0") == "1"   # K1-lite fused gate chain: opt-in, no in-situ gain (9.9 vs 9.8 tok/s)
 
 
 def enable(flag: bool = True):
@@ -423,3 +424,61 @@ def sparse_attn(q, kv, attn_sink, topk_idxs, softmax_scale, chunk, fallback):
                            mx.broadcast_to(attn_sink.astype(mx.float32).reshape(1, h, 1, 1), (b * m, h, 1, 1))], axis=-1)
     o = mx.fast.scaled_dot_product_attention(Q, kvx, kvx, scale=softmax_scale, mask=mask)
     return o.reshape(b, m, h, d).astype(q.dtype)
+
+
+# ---------------------------------------------------------------------------
+# MoE gate post-matmul chain (K1-lite). The 384x5120 matmul stays MLX's; only what follows is fused.
+_GATE_SRC = r"""
+    threadgroup float sc[1024];      // scores (unbiased, for the weights)
+    threadgroup float bs[1024];      // biased (for selection)
+    threadgroup float red_v[8]; threadgroup int red_i[8];
+    threadgroup int sel[16];
+    uint t = thread_position_in_threadgroup.x, tid = threadgroup_position_in_grid.y;
+    uint sg = t / 32, lane = t % 32;
+    for (uint e = t; e < E; e += 256) {
+        float z = (float)logits[tid * E + e] / temp;
+        float sp = z > 20.0f ? z : metal::log(1.0f + metal::exp(z));   // softplus, stable
+        float s = metal::sqrt(sp);
+        sc[e] = s; bs[e] = s + bias[e];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float wsum = 0.0f;
+    for (uint r = 0; r < K; ++r) {
+        float bv = -1e30f; int bi = -1;
+        for (uint e = t; e < E; e += 256) { float v = bs[e]; if (v > bv || (v == bv && (int)e < bi)) { bv = v; bi = (int)e; } }
+        // simd reduce (max value, lowest index on ties)
+        for (uint o = 16; o > 0; o >>= 1) {
+            float ov = metal::simd_shuffle_down(bv, o); int oi = metal::simd_shuffle_down(bi, o);
+            if (ov > bv || (ov == bv && oi >= 0 && (oi < bi || bi < 0))) { bv = ov; bi = oi; }
+        }
+        if (lane == 0) { red_v[sg] = bv; red_i[sg] = bi; }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (t == 0) {
+            float mv = -1e30f; int mi = -1;
+            for (uint g = 0; g < 8; ++g) { if (red_v[g] > mv || (red_v[g] == mv && red_i[g] >= 0 && (red_i[g] < mi || mi < 0))) { mv = red_v[g]; mi = red_i[g]; } }
+            sel[r] = mi; bs[mi] = -1e30f;                      // remove from further rounds
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (t < K) { int e = sel[t]; float w = sc[e]; wsum = w; }
+    // normalise over the K selected (K <= 32: one simd group)
+    float tot = metal::simd_sum(sg == 0 ? wsum : 0.0f);
+    if (t < K) {
+        int e = sel[t]; float w = sc[e];
+        if (NORM != 0) w = w / (tot + 1e-20f);
+        out_w[tid * K + t] = w * route_scale;
+        out_i[tid * K + t] = e;
+    }
+"""
+_gate_kernel = mx.fast.metal_kernel(name="v41_gate_topk", input_names=["logits", "bias", "temp", "route_scale", "E", "K", "NORM"],
+                               output_names=["out_w", "out_i"], source=_GATE_SRC)
+def gate_topk(logits, bias, k, temp, route_scale, norm):
+    """MoE gate post-matmul chain fused: /temp -> sqrt(softplus) -> +bias -> top-k -> gather scores ->
+    normalise -> route_scale, one launch per call instead of ~8 (sqrtsoftplus gates, E <= 1024, k <= 16).
+    Same expert sets as argpartition, weights within 1e-7. 320 -> 241 us at M=1 (synthetic)."""
+    T, E = logits.shape
+    w, i = _gate_kernel(inputs=[logits, bias.astype(mx.float32), mx.array(temp, mx.float32), mx.array(route_scale, mx.float32),
+                           mx.array(E, mx.uint32), mx.array(k, mx.uint32), mx.array(1 if norm else 0, mx.uint32)],
+                   grid=(256, T, 1), threadgroup=(256, 1, 1), output_shapes=[(T, k), (T, k)], output_dtypes=[mx.float32, mx.int32])
+    return w, i
+

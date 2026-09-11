@@ -66,6 +66,9 @@ class Gate(nn.Module):
         return c[1]
 
     def __call__(self, x: mx.array):
+        if fast.ENABLED and fast.GATE_KERNEL and self.score_func == "sqrtsoftplus" and self.weight.shape[0] <= 1024 and self.topk <= 16:
+            logits = x.astype(mx.float32) @ self._w_f32().T
+            return fast.gate_topk(logits, self.bias, self.topk, float(self.gate_temp), float(self.route_scale), self.norm_topk_prob)
         scores = (x.astype(mx.float32) @ self._w_f32().T) / self.gate_temp
         if self.score_func == "softmax":
             scores = mx.softmax(scores, axis=-1)

@@ -97,3 +97,11 @@ agreement 88–93%.
 | `tests/test_parity.py` | the validation above |
 | `docs/reference/` | DeepSeek's inference code (the reference) |
 | `docs/upstream-notes.md` | the decode bug + Metal/MLX operational findings |
+
+
+## Fast paths, DSpark speculative decoding, server (branches `fast` → `dspark` → `serve`)
+
+Opt-out Metal/`mx.fast` kernels behind call-time guards (6.6 → 9.8 tok/s greedy on an M3 Ultra,
+perplexity unchanged: paired ratio 1.0000 [0.9988, 1.0012]), the release's own DSpark/MTP head as a
+speculative decoder (21.9 tok/s on code, 23.9 on REAP25), and an OpenAI-compatible server with a
+prefix cache. All validated against the reference: see [docs/fast-and-dspark.md](docs/fast-and-dspark.md).

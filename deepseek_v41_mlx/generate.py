@@ -70,8 +70,14 @@ def _forward(model, ids, cache):
 
 def greedy_generate(model: Model, input_ids, max_new_tokens: int = 64,
                     max_seq_len: int | None = None, eos_id: int = 1,
-                    dtype=mx.float32, prefill_chunk: int = 512):
-    """input_ids: list[int] or [1, n] array. Returns the generated ids."""
+                    dtype=mx.float32, prefill_chunk: int = 2048):
+    """input_ids: list[int] or [1, n] array. Returns the generated ids.
+
+    prefill_chunk: 2048 by default. Prefill is expert-weight-bandwidth-bound (every chunk re-reads a
+    layer's experts), so bigger chunks are faster: 512 -> 2048 measured 282 -> 379 tok/s on an M3
+    Ultra, 8192 -> 408 with ~25 GB more peak. Chunks of 256-512 are only needed for a LAZY (mmap)
+    load near the RAM ceiling, where one big chunk can stall a Metal command buffer on page-ins;
+    a materialized build (the default when it fits) ran 2048-token chunks for hours without one."""
     try:
         mx.set_wired_limit(int(470e9))
     except Exception:  # noqa: BLE001

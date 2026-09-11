@@ -48,7 +48,9 @@ def main():
     # watchdog, and after ONE timeout the process's further GPU submissions are
     # ignored (kIOGPUCommandBufferCallbackErrorSubmissionsIgnored) — so
     # prevention is the only strategy that works in-process.
-    CHUNK = int(os.environ.get("DSV41_PPL_CHUNK", "256"))
+    # 2048 (one window per chunk) since the build is materialized when it fits; the watchdog
+    # concern above is the lazy-load case. 256 reproduces the README numbers bit-for-bit.
+    CHUNK = int(os.environ.get("DSV41_PPL_CHUNK", "2048"))
 
     def window_nll(ids):
         cache = model.make_cache(bsz=1, max_seq_len=SEQ + 8, dtype=mx.bfloat16)

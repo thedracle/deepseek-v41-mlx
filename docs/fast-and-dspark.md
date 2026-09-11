@@ -27,6 +27,12 @@ tool-call turns at 95–97 % draft acceptance, 15–18 tok/s on long thinking-mo
 Prefill is MoE weight-bandwidth-bound at small chunks (every chunk re-reads a layer's 6.8 GB of
 experts); chunk size is the lever, attention kernels are not (see "what lost" below).
 
+`greedy_generate` and `ppl_large.py` now default to 2048-token chunks. The 256–512 defaults upstream
+guard against a *lazy* (mmap) load near the RAM ceiling, where one large chunk can stall a Metal
+command buffer on page-ins and a single timeout poisons the process. A materialized build (what
+`load()` picks whenever it fits) ran 2048-token chunks for hours, and 8192 for a 16k prompt, without
+tripping the watchdog. `DSV41_PPL_CHUNK=256` reproduces the README perplexities bit-for-bit.
+
 ## Quality: paired perplexity, same windows
 
 | A vs B | ppl B/A | 95 % CI | B better (windows) |

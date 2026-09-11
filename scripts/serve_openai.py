@@ -117,7 +117,16 @@ class Engine:
         for k in ("steps", "drafted", "accepted", "rejects", "resyncs"): st[k] = 0
         while len(out) < max_new:
             p0 = self.cache.offset
-            draft = dr.draft(pending[-1]); inp = pending + draft
+            if D.CONF_MIN is None:
+                draft = dr.draft(pending[-1])
+            else:                                            # S2 confidence trimming (see dspark.CONF_MIN)
+                _, draft, conf = dr.draft_logits(pending[-1], with_confidence=True)
+                keep = 0
+                for c in conf[0].tolist():
+                    if c < D.CONF_MIN: break
+                    keep += 1
+                draft = draft[:max(keep, 1)]
+            inp = pending + draft
             st["steps"] += 1; st["drafted"] += len(draft)
             snap = _cache_snapshot(self.cache)
             lg, mh = D.forward_capture(self.model, mx.array([inp]), self.cache)

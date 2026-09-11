@@ -246,10 +246,15 @@ def forward_capture(model, input_ids, cache):
 
 
 STATS = {}
+# S2: drop drafted tokens from the first position whose confidence-head logit is below CONF_MIN; a shorter
+# verify chunk costs less than the tokens it gives up. Measured: prose 13.7 -> 14.6 tok/s, code 18.0 -> 21.4
+# at 0.0 (None disables; DSV41_CONF_MIN overrides).
+_cm = os.environ.get("DSV41_CONF_MIN", "0.0")
+CONF_MIN = None if _cm.lower() in ("none", "off", "") else float(_cm)
 
 
 def spec_generate(model, drafter, input_ids, max_new_tokens=64, max_seq_len=None, eos_id=1,
-                  dtype=mx.bfloat16, prefill_chunk=512, max_pending=12):
+                  dtype=mx.bfloat16, prefill_chunk=512, max_pending=12, conf_min="default"):
     """Greedy speculative decoding with the native DSpark drafter. Each step: draft block_size
     tokens from the last decided token, forward [pending + draft] through the target in one
     chunk, accept the longest matching prefix + 1 bonus token from the target's own logits.
@@ -258,7 +263,8 @@ def spec_generate(model, drafter, input_ids, max_new_tokens=64, max_seq_len=None
     once). The drafter's rings are seeded with the target hiddens of every accepted token."""
     try: mx.set_wired_limit(int(470e9))
     except Exception: pass
-    for k in ("steps", "drafted", "accepted", "rejects", "resyncs"): STATS[k] = 0
+    if conf_min == "default": conf_min = CONF_MIN
+    for k in ("steps", "drafted", "accepted", "rejects", "resyncs", "trimmed"): STATS[k] = 0
     model._dspark_targets = drafter.targets
     seq = list(input_ids) if not hasattr(input_ids[0], "__len__") else list(input_ids[0])
     B = drafter.block_size
@@ -272,7 +278,16 @@ def spec_generate(model, drafter, input_ids, max_new_tokens=64, max_seq_len=None
     out, pending = [first], [first]
     while len(out) < max_new_tokens and out[-1] != eos_id:
         p0 = cache.offset
-        draft = drafter.draft(pending[-1])
+        if conf_min is None:
+            draft = drafter.draft(pending[-1])
+        else:                                    # S2: trim the block at the first low-confidence position
+            _, draft, conf = drafter.draft_logits(pending[-1], with_confidence=True)
+            keep = 0
+            for c in conf[0].tolist():
+                if c < conf_min: break
+                keep += 1
+            draft = draft[:max(keep, 1)]         # always draft >= 1 token
+            STATS["trimmed"] += drafter.block_size - len(draft)
         inp = pending + draft
         STATS["steps"] += 1; STATS["drafted"] += len(draft)
         snap = _cache_snapshot(cache)

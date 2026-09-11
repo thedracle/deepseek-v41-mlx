@@ -76,6 +76,23 @@ sequential argmax can produce a sibling branch from the same block logits at no 
 the verify needs a tree-aware window index matrix — the compressed-KV pollution is the same class as
 the chunk path, and the committed state is always re-forwarded clean).
 
+
+### S2 result: confidence trimming is a win — integrated (default `DSV41_CONF_MIN=0.0`)
+
+`scripts/s2_conf_trim.py`, 200-token answers, DSpark: drop drafted tokens from the first position whose
+confidence-head logit is below the threshold.
+
+| conf_min | prose tok/s (tok/step) | code tok/s (tok/step) |
+|---:|---:|---:|
+| none | 13.7 (2.82) | 18.0 (3.57) |
+| −0.5 | 13.9 (2.38) | 19.7 (3.57) |
+| **0.0** | **14.6 (2.22)** | **21.4 (3.57)** |
+| 0.5 | 14.0 (2.04) | 19.7 (3.28) |
+| 1.0 | 14.4 (1.98) | 19.3 (2.86) |
+
+Fewer tokens per step, but the verify chunk shrinks by more than the tokens it gives up: +7 % prose,
++19 % code. Wired into `dspark.spec_generate` and the server loop; `DSV41_CONF_MIN=none` disables.
+
 ## Phase 0 results (2026-09-11)
 
 - **A4 — MLX bump: nothing available.** 0.32.2 and mlx-lm 0.31.3 are the newest releases.
@@ -122,6 +139,21 @@ route+gather+SwiGLU), i.e. Phase 3 work.
 - Speculative decoding is the remaining multiplier: S3 draft trees (prose +25 % est., 2–3 days) and
   S2 confidence trimming (few %). Code/agent turns are already at 78–97 % acceptance.
 - Prefill: K2 expert-major MoE is the only large lever (1.5–2×, ~1 week, high risk).
+
+
+### K3 / A4 evidence: upstream MLX (searched 2026-09-11)
+
+- The small-M quantized matmul premium is a known, open-ended upstream topic: #3863 (BM=16 qmm tile for
+  the "small-M decode dead-zone", merged before 0.32.1), #4265 ("quantized_matmul does not amortize the
+  weight read for small M", closed 2026-08-16: maintainer — "for small M we rely on qmv_wide; PRs welcome"),
+  #4246 (sorted gather_qmm at ~69 % of dense throughput for MoE-typical small groups; maintainer:
+  grouped GEMM is "one of the hottest and hardest topics", no fix). So K3 is not fixed upstream and
+  not cheap; our verify-chunk premium (213 → 280 µs at M=1→6) stands.
+- Landed on `main` AFTER v0.32.2 (2026-08-25), relevant to us: **D512 support in Metal vector attention
+  (#4459)** — our head_dim is 512, so decode SDPA may currently be on a slower generic path — a
+  global-scale qmm change (#4458), non-transposed affine qmm dispatch fix (#4392), sorted gather_qmm
+  fixes (#4009, #3922), GQA vector SDPA batch-offset fix (#4431). No PyPI release carries them yet.
+  → A4 revisited: building MLX from `main` in a separate venv to measure (in progress).
 
 ## Not worth pursuing (measured or bounded)
 

@@ -97,7 +97,6 @@ class Engine:
             yield from self._generate(ids, max_new, stop_ids)
         finally:
             self._sync_slot()
-            mx.clear_cache()          # return MLX's allocator cache (prefill activations) to the OS between requests
 
     def _generate(self, ids, max_new, stop_ids):
         logits = self.prepare(ids)

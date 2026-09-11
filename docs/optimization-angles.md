@@ -102,6 +102,27 @@ the chunk path, and the committed state is always re-forwarded clean).
   - Conclusion for the plan: decode time is ~90 ms of GPU execution of ~6,500 small kernels. Only fusion
     (fewer kernels: L2/L3/K1) or fewer steps (DSpark: S1/S3) can move it. Pipelining is exhausted.
 
+
+### L2-lite result: `mx.compile` on the shape-static halves — no gain (measured, `scripts/compile_experiment.py`)
+
+Compiling every block's FFN half (hc_mixes → hc_pre → norm → MoE → hc_post) and attention pre-half
+(hc_mixes → hc_pre → norm) per layer: uncompiled 10.19 tok/s; compiled 10.07–10.57 (noise), 15 s of
+compile time. MLX's compiler fuses elementwise chains — and those are already single Metal kernels
+here. What remains per layer is matmuls, gathers, reductions and cache writes, which `mx.compile`
+does not fuse. **L2 is exhausted in its cheap form**; the only way to cut the remaining ~6,500 kernels
+is hand-written kernels that fuse matmul + elementwise (norm-into-GEMV, rope-into-projection,
+route+gather+SwiGLU), i.e. Phase 3 work.
+
+### Where this leaves the plan (2026-09-11, end of day)
+
+- Exhausted: pipelining (A1/L1), elementwise fusion (fast paths + L2-lite), chained drafting (S1).
+- Greedy decode is at ~10 tok/s = ~90 ms of GPU time per step across ~6,500 kernels; from Python the
+  runtime is essentially at its floor. Further greedy gains are Phase 3 kernel work (K1 fused MoE
+  ≤ 8 %; norm/rope-into-GEMV fusions, a few % each) or upstream MLX changes.
+- Speculative decoding is the remaining multiplier: S3 draft trees (prose +25 % est., 2–3 days) and
+  S2 confidence trimming (few %). Code/agent turns are already at 78–97 % acceptance.
+- Prefill: K2 expert-major MoE is the only large lever (1.5–2×, ~1 week, high risk).
+
 ## Not worth pursuing (measured or bounded)
 
 - pruning for speed: REAP25 +12 % greedy, +1 % with DSpark, ×1.028 ppl — memory tool, not speed
